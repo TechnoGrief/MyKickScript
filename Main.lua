@@ -1,293 +1,121 @@
--- Decoded + fixed KickaLuckyBlock.lua
--- VM garbage removed, global-name bug fixed, duplicate toggle flags fixed.
--- No guessed missing payload added: Perfect Kick and Mutation Finder keep only behavior present in the original file.
-
-local CoreGui = game:GetService("CoreGui")
-local Players = game:GetService("Players")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local RunService = game:GetService("RunService")
-
-local player = Players.LocalPlayer
-
-local oldGui = CoreGui:FindFirstChild("ToraScript")
-if oldGui then
-    oldGui:Destroy()
-end
+-- Deobfuscated from D:\DEOB\KickaLuckyBlock.lua.
+-- Evidence files:
+--   D:\DEOB\deob_stage1_strings.py
+--   D:\DEOB\KickaLuckyBlock.stage1.strings.txt
+--   D:\DEOB\KickaLuckyBlock.stage1.gmap.txt
+--   D:\DEOB\trace_vm.lua
+--   D:\DEOB\KickaLuckyBlock.trace.txt
+--
+-- This file contains only behavior confirmed by decoded constants and the
+-- sandbox trace. Unknown callback bodies are left as unknown instead of guessed.
 
 local Library = loadstring(game:HttpGet(
-    "https://raw.githubusercontent.com/TechnoGrief/MyKickScript/main/Coolscript.lua"
+    "https://raw.githubusercontent.com/liebertsx/Tora-Library/main/src/librarynew",
+    true
 ))()
 
-local main = Library:CreateWindow("Kick a Lucky Block")
+local Main = Library:CreateWindow("Kick a Lucky Block")
 
-local flags = {
-    kick = false,
-    bonus = false,
-    cash = false,
-    upgrade = false,
-    speed = false,
-    rebirth = false,
-}
+task.spawn(function()
+    -- Confirmed spawned loop uses tick/task.wait.
+    -- Body was not expanded in the safe trace to avoid running an infinite loop.
+end)
 
-local function network()
-    return ReplicatedStorage.Shared.Packages.Network
-end
-
-local function getOwnedPlot()
-    local plots = workspace:FindFirstChild("Plots")
-    if not plots then
-        return nil
-    end
-
-    for _, plot in ipairs(plots:GetChildren()) do
-        if plot:GetAttribute("Owner") == player.Name then
-            return plot
-        end
-    end
-
-    return nil
-end
-
-local function safeFireConnection(connection)
-    if typeof(connection) ~= "table" then
-        return
-    end
-
-    if typeof(connection.Fire) == "function" then
-        pcall(function()
-            connection:Fire()
-        end)
-    elseif typeof(connection.Function) == "function" then
-        pcall(connection.Function)
-    end
-end
-
-local function clickActivated(object)
-    if not object then
-        return
-    end
-
-    local signal = object.Activated or object.MouseButton1Click
-    if not signal then
-        return
-    end
-
-    if typeof(getconnections) == "function" then
-        for _, connection in ipairs(getconnections(signal)) do
-            safeFireConnection(connection)
-        end
-    elseif typeof(firesignal) == "function" then
-        pcall(firesignal, signal)
-    end
-end
-
-local function kickLoop()
-    -- Exact decoded behavior: it only waits for the character, HumanoidRootPart and Humanoid.
-    -- No actual kick/claim remote or touch logic exists in the uploaded obfuscated file.
-    while flags.kick do
-        task.wait()
-
-        pcall(function()
-            local character = player.Character or player.CharacterAdded:Wait()
-            character:WaitForChild("HumanoidRootPart")
-            character:WaitForChild("Humanoid")
-        end)
-    end
-end
-
-local function bonusLoop()
-    while flags.bonus do
-        wait()
-
-        pcall(function()
-            local backpack = player:WaitForChild("Backpack")
-            for _, tool in ipairs(backpack:GetChildren()) do
-                if tool:IsA("Tool") then
-                    tool:GetAttribute("GUID")
-                end
-            end
-
-            local playerGui = player:FindFirstChild("PlayerGui")
-            local upgradesGui = playerGui and playerGui:FindFirstChild("KickUpgrades")
-
-            if upgradesGui then
-                for _, item in ipairs(upgradesGui:GetChildren()) do
-                    if item.Name == "Bonus" then
-                        clickActivated(item)
-                    end
-                end
-            end
-
-            wait(0.2)
-        end)
-    end
-end
-
-local function collectCashLoop()
-    while flags.cash do
-        wait()
-
-        pcall(function()
-            local plot = getOwnedPlot()
-            local buttons = plot and plot:FindFirstChild("Buttons")
-
-            if buttons then
-                for _, item in ipairs(buttons:GetDescendants()) do
-                    if item:IsA("TouchTransmitter") then
-                        local parentName = item.Parent and item.Parent.Name
-
-                        if parentName == "l1" then
-                            network().rev_B_Collect:FireServer(1)
-                        elseif parentName == "l2" then
-                            network().rev_B_Collect:FireServer(2)
-                        else
-                            network().rev_B_Collect:FireServer()
-                        end
-                    end
-                end
-            end
-
-            wait(2)
-        end)
-    end
-end
-
-local function upgradeLoop()
-    while flags.upgrade do
-        wait()
-
-        pcall(function()
-            local plot = getOwnedPlot()
-            local buttons = plot and plot:FindFirstChild("Buttons")
-
-            if buttons then
-                for _, item in ipairs(buttons:GetDescendants()) do
-                    if item:IsA("TouchTransmitter") then
-                        local parentName = item.Parent and item.Parent.Name
-
-                        if parentName == "l1" then
-                            network().rev_B_Upgrade:FireServer(1)
-                            wait(0.2)
-                        elseif parentName == "l2" then
-                            network().rev_B_Upgrade:FireServer(2)
-                            wait(0.2)
-                        end
-                    end
-                end
-            end
-
-            wait(1)
-        end)
-    end
-end
-
-local function speedLoop()
-    while flags.speed do
-        wait()
-
-        pcall(function()
-            network().rev_SPEED_UPGRADE:FireServer(1)
-            wait(0.2)
-        end)
-    end
-end
-
-local function rebirthLoop()
-    while flags.rebirth do
-        wait()
-
-        pcall(function()
-            network().rev_RebirthRequest:FireServer()
-            wait(2)
-        end)
-    end
-end
-
-local function runLoop(flagName, enabled, loopFunction)
-    flags[flagName] = enabled
-
-    if enabled then
-        task.spawn(loopFunction)
-    end
-end
-
-main:AddToggle({
+local perfectKickAndClaim = false
+Main:AddToggle({
     text = "Perfect Kick & Claim",
-    flag = "kick_toggle",
+    flag = "toggle",
     state = false,
-    callback = function(enabled)
-        print("Kick: ", enabled)
-        runLoop("kick", enabled, kickLoop)
+    callback = function(value)
+        print("Kick: ", value)
+        perfectKickAndClaim = value
+        -- Unknown body. Decoded constants include: Kick, FireServer, Fire,
+        -- GetChildren, GetDescendants, FindFirstChild, WaitForChild.
     end,
 })
 
-main:AddToggle({
+local bonusTrain = false
+Main:AddToggle({
     text = "Bonus Train",
-    flag = "bonus_toggle",
+    flag = "toggle",
     state = false,
-    callback = function(enabled)
-        print("Bonus: ", enabled)
-        runLoop("bonus", enabled, bonusLoop)
+    callback = function(value)
+        print("Bonus: ", value)
+        bonusTrain = value
+        -- Unknown body. Decoded constants include: Bonus.
     end,
 })
 
-main:AddToggle({
+local plots = workspace.Plots:GetChildren()
+
+local collectCash = false
+Main:AddToggle({
     text = "Collect Cash",
-    flag = "cash_toggle",
+    flag = "toggle",
     state = false,
-    callback = function(enabled)
-        print("Cash: ", enabled)
-        runLoop("cash", enabled, collectCashLoop)
+    callback = function(value)
+        print("Cash: ", value)
+        collectCash = value
+        -- Unknown body. Decoded constants include: Cash.
     end,
 })
 
-main:AddToggle({
+local upgradeAll = false
+Main:AddToggle({
     text = "Upgrade All",
-    flag = "upgrade_toggle",
+    flag = "toggle",
     state = false,
-    callback = function(enabled)
-        print("Upgrade: ", enabled)
-        runLoop("upgrade", enabled, upgradeLoop)
+    callback = function(value)
+        print("Upgrade: ", value)
+        upgradeAll = value
+        -- Unknown body. Decoded constants include: Upgrade.
     end,
 })
 
-main:AddToggle({
+local buySpeed = false
+Main:AddToggle({
     text = "Buy Speed",
-    flag = "speed_toggle",
+    flag = "toggle",
     state = false,
-    callback = function(enabled)
-        print("Speed: ", enabled)
-        runLoop("speed", enabled, speedLoop)
+    callback = function(value)
+        print("Speed: ", value)
+        buySpeed = value
+        -- Unknown body. Decoded constants include: Speed.
     end,
 })
 
-main:AddToggle({
+local autoRebirth = false
+Main:AddToggle({
     text = "Auto Rebirth",
-    flag = "rebirth_toggle",
+    flag = "toggle",
     state = false,
-    callback = function(enabled)
-        print("Rebirth: ", enabled)
-        runLoop("rebirth", enabled, rebirthLoop)
+    callback = function(value)
+        print("Rebirth: ", value)
+        autoRebirth = value
+        -- Unknown body. Decoded constants include: Rebirth.
     end,
 })
 
-main:AddButton({
+Main:AddButton({
     text = "Sell All",
-    flag = "sell_all_button",
+    flag = "button",
     callback = function()
-        pcall(function()
-            network().ref_B_SellAll:InvokeServer()
-        end)
+        game:GetService("ReplicatedStorage")
+            .Shared
+            .Packages
+            .Network
+            .ref_B_SellAll
+            :InvokeServer()
     end,
 })
 
-main:AddLabel({
-    text = "YouTube: Tora IsMe",
+Main:AddLabel({
+    -- Label table content was not exposed by the current trace.
 })
 
-local mutationWindow = Library:CreateWindow("Find Mutation")
+local Mutation = Library:CreateWindow("Find Mutation")
 
-for _, name in ipairs({
+local mutations = {
     "Golden",
     "Diamond",
     "Plasma",
@@ -296,15 +124,16 @@ for _, name in ipairs({
     "Shadow",
     "Electrified",
     "Rainbow",
-}) do
-    mutationWindow:AddToggle({
-        text = name,
-        flag = name,
+}
+
+for _, mutationName in ipairs(mutations) do
+    Mutation:AddToggle({
+        text = mutationName,
+        flag = mutationName,
         state = false,
-        callback = function()
-            -- Empty in the decoded source.
+        callback = function(value)
+            -- Confirmed callback exists for each mutation toggle.
+            -- Trace did not execute these callback bodies.
         end,
     })
 end
-
-Library:Init()
