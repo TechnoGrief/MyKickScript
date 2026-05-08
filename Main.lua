@@ -1,6 +1,6 @@
--- Kick a Lucky Block - Luau / Executor standalone build
+-- Kick a Lucky Block - Luau / Executor standalone build V2
 -- No external UI library, no key system.
--- Uses only remotes found in the decoded file:
+-- Uses decoded remotes + touch fallback + remote spy:
 -- rev_B_Collect, rev_B_Upgrade, rev_SPEED_UPGRADE, rev_RebirthRequest, ref_B_SellAll
 
 local Players = game:GetService("Players")
@@ -380,9 +380,90 @@ end
 
 local unpackArgs = table.unpack or unpack
 
+local function packArgs(...)
+    local packed = { ... }
+    packed.n = select("#", ...)
+    return packed
+end
+
+local function copyArgs(args)
+    local copied = { n = args and (args.n or #args) or 0 }
+
+    for i = 1, copied.n do
+        copied[i] = args[i]
+    end
+
+    return copied
+end
+
+local function argsToText(args)
+    args = args or { n = 0 }
+    local parts = {}
+    local n = args.n or #args
+
+    for i = 1, math.min(n, 8) do
+        local value = args[i]
+        local valueType = typeof(value)
+
+        if valueType == "Instance" then
+            local ok, fullName = pcall(function()
+                return value:GetFullName()
+            end)
+            parts[#parts + 1] = ok and (value.ClassName .. ":" .. fullName) or (value.ClassName .. ":" .. value.Name)
+        elseif valueType == "string" then
+            parts[#parts + 1] = string.format("%q", value)
+        else
+            parts[#parts + 1] = tostring(value)
+        end
+    end
+
+    if n > 8 then
+        parts[#parts + 1] = "..."
+    end
+
+    return table.concat(parts, ", ")
+end
+
+local function callRemoteObject(remote, argsPack, label)
+    argsPack = argsPack or { n = 0 }
+    argsPack.n = argsPack.n or #argsPack
+    label = label or (remote and remote.Name) or "remote"
+
+    if not remote then
+        return false, "missing remote object"
+    end
+
+    if not (remote:IsA("RemoteEvent") or remote:IsA("RemoteFunction")) then
+        warnOnce("badtype_obj_" .. label, label .. " is not RemoteEvent/RemoteFunction, type = " .. tostring(remote.ClassName))
+        return false, "bad type"
+    end
+
+    local oldSuppress = state.suppressSpy
+    state.suppressSpy = true
+
+    local ok, result
+
+    if remote:IsA("RemoteEvent") then
+        ok, result = pcall(function()
+            remote:FireServer(unpackArgs(argsPack, 1, argsPack.n))
+        end)
+    else
+        ok, result = pcall(function()
+            return remote:InvokeServer(unpackArgs(argsPack, 1, argsPack.n))
+        end)
+    end
+
+    state.suppressSpy = oldSuppress
+
+    if not ok then
+        warnOnce("call_obj_" .. label, label .. " call error: " .. tostring(result))
+        return false, result
+    end
+
+    return true, result
+end
+
 local function callRemote(remoteName, ...)
-    local args = {...}
-    local argCount = select("#", ...)
     local remote = getRemote(remoteName)
 
     if not remote then
@@ -390,34 +471,178 @@ local function callRemote(remoteName, ...)
         return false, "missing"
     end
 
-    if remote:IsA("RemoteEvent") then
-        local ok, err = pcall(function()
-            remote:FireServer(unpackArgs(args, 1, argCount))
-        end)
+    return callRemoteObject(remote, packArgs(...), remoteName)
+end
 
-        if not ok then
-            warnOnce("fire_" .. remoteName, remoteName .. " FireServer error: " .. tostring(err))
-            return false, err
+local function findRemoteCandidates(words, maxResults)
+    local found = {}
+    maxResults = maxResults or 15
+
+    for _, object in ipairs(ReplicatedStorage:GetDescendants()) do
+        if object:IsA("RemoteEvent") or object:IsA("RemoteFunction") then
+            local name = string.lower(object.Name)
+            local fullName = string.lower(object:GetFullName())
+            local matched = true
+
+            for _, word in ipairs(words) do
+                local needle = string.lower(tostring(word))
+                if not string.find(name, needle, 1, true) and not string.find(fullName, needle, 1, true) then
+                    matched = false
+                    break
+                end
+            end
+
+            if matched then
+                found[#found + 1] = object
+                if #found >= maxResults then
+                    break
+                end
+            end
         end
+    end
 
+    return found
+end
+
+local remoteSpy = globalEnv.__KLB_REMOTE_SPY_V2 or {
+    enabled = false,
+    installed = false,
+    calls = {},
+    max = 80,
+}
+
+globalEnv.__KLB_REMOTE_SPY_V2 = remoteSpy
+state.learned = state.learned or {}
+
+local function recordSpyCall(remote, method, args)
+    local ok, fullName = pcall(function()
+        return remote:GetFullName()
+    end)
+
+    local packed = copyArgs(args or { n = 0 })
+
+    local call = {
+        remote = remote,
+        method = method,
+        args = packed,
+        name = remote.Name,
+        className = remote.ClassName,
+        path = ok and fullName or remote.Name,
+        time = os.clock(),
+    }
+
+    table.insert(remoteSpy.calls, call)
+
+    while #remoteSpy.calls > remoteSpy.max do
+        table.remove(remoteSpy.calls, 1)
+    end
+
+    print("[KLB SPY]", method, call.path, "ARGS:", argsToText(packed))
+end
+
+local function installRemoteSpy()
+    if remoteSpy.installed then
         return true
     end
 
-    if remote:IsA("RemoteFunction") then
-        local ok, result = pcall(function()
-            return remote:InvokeServer(unpackArgs(args, 1, argCount))
-        end)
-
-        if not ok then
-            warnOnce("invoke_" .. remoteName, remoteName .. " InvokeServer error: " .. tostring(result))
-            return false, result
-        end
-
-        return true, result
+    if typeof(hookmetamethod) ~= "function" or typeof(getnamecallmethod) ~= "function" or typeof(newcclosure) ~= "function" then
+        warnOnce("spy_not_supported", "Remote spy unsupported: executor has no hookmetamethod/getnamecallmethod/newcclosure")
+        return false
     end
 
-    warnOnce("badtype_" .. remoteName, remoteName .. " is not RemoteEvent/RemoteFunction, type = " .. remote.ClassName)
-    return false, "bad type"
+    local oldNamecall
+    oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
+        local method = getnamecallmethod()
+
+        local activeState = globalEnv[GLOBAL_KEY]
+        local suppressed = activeState and activeState.suppressSpy
+
+        if remoteSpy.enabled and not suppressed and typeof(self) == "Instance" then
+            if method == "FireServer" or method == "InvokeServer" then
+                if self:IsA("RemoteEvent") or self:IsA("RemoteFunction") then
+                    recordSpyCall(self, method, packArgs(...))
+                end
+            end
+        end
+
+        return oldNamecall(self, ...)
+    end))
+
+    remoteSpy.oldNamecall = oldNamecall
+    remoteSpy.installed = true
+    return true
+end
+
+local function setSpyEnabled(enabled)
+    if enabled then
+        if not installRemoteSpy() then
+            setStatus("Spy unsupported by executor", Color3.fromRGB(255, 120, 120))
+            return false
+        end
+
+        remoteSpy.enabled = true
+        setStatus("Spy ON: do action manually, then Learn Last", Color3.fromRGB(120, 255, 170))
+        return true
+    end
+
+    remoteSpy.enabled = false
+    setStatus("Spy OFF", Color3.fromRGB(190, 205, 255))
+    return true
+end
+
+local function clearSpyCalls()
+    remoteSpy.calls = {}
+    setStatus("Spy calls cleared", Color3.fromRGB(190, 205, 255))
+end
+
+local function printSpyCalls()
+    print("[KLB SPY] Last calls:", #remoteSpy.calls)
+
+    for index, call in ipairs(remoteSpy.calls) do
+        print(string.format("[KLB SPY #%d] %s %s ARGS: %s", index, tostring(call.method), tostring(call.path), argsToText(call.args)))
+    end
+
+    setStatus("Printed spy calls to F9: " .. tostring(#remoteSpy.calls), Color3.fromRGB(120, 210, 255))
+end
+
+local function getLastSpyCall()
+    return remoteSpy.calls[#remoteSpy.calls]
+end
+
+local function learnLastRemote(actionName)
+    local call = getLastSpyCall()
+
+    if not call then
+        setStatus("No spy calls. Turn Spy ON and do the action manually.", Color3.fromRGB(255, 120, 120))
+        return false
+    end
+
+    state.learned[actionName] = {
+        remote = call.remote,
+        method = call.method,
+        args = copyArgs(call.args),
+        path = call.path,
+        className = call.className,
+    }
+
+    setStatus("Learned " .. actionName .. ": " .. tostring(call.name), Color3.fromRGB(120, 255, 170))
+    print("[KLB LEARNED]", actionName, call.method, call.path, "ARGS:", argsToText(call.args))
+    return true
+end
+
+local function callLearnedRemote(actionName)
+    local learned = state.learned[actionName]
+
+    if not learned or not learned.remote then
+        return false, "not learned"
+    end
+
+    if not learned.remote.Parent then
+        warnOnce("learned_dead_" .. actionName, "Learned remote for " .. actionName .. " is no longer parented")
+        return false, "dead remote"
+    end
+
+    return callRemoteObject(learned.remote, learned.args, "learned_" .. actionName)
 end
 
 local function valueMatchesPlayer(value)
@@ -536,60 +761,324 @@ local function dumpPlots()
     setStatus(owned and ("Owned plot: " .. owned.Name) or "Owned plot not found", owned and Color3.fromRGB(120, 255, 170) or Color3.fromRGB(255, 120, 120))
 end
 
-local function doCollect()
-    local called = false
-    local plot = getOwnedPlot()
-    local buttons = plot and plot:FindFirstChild("Buttons")
+local activateButton
 
-    if buttons then
-        for _, item in ipairs(buttons:GetDescendants()) do
-            if item:IsA("TouchTransmitter") then
-                local parentName = item.Parent and item.Parent.Name
+local function getCharacterPartsV2()
+    local character = player.Character or player.CharacterAdded:Wait()
+    local humanoid = character:FindFirstChildOfClass("Humanoid") or character:FindFirstChild("Humanoid")
+    local root = character:FindFirstChild("HumanoidRootPart")
+    return character, humanoid, root
+end
 
-                if parentName == "l1" then
-                    called = callRemote("rev_B_Collect", 1) or called
-                elseif parentName == "l2" then
-                    called = callRemote("rev_B_Collect", 2) or called
-                else
-                    called = callRemote("rev_B_Collect") or called
-                end
+local function getObjectPosition(object)
+    local ok, result = pcall(function()
+        if object:IsA("BasePart") then
+            return object.Position
+        end
+
+        if object:IsA("Model") then
+            return object:GetPivot().Position
+        end
+
+        local basePart = object:FindFirstChildWhichIsA("BasePart", true)
+        return basePart and basePart.Position or nil
+    end)
+
+    return ok and result or nil
+end
+
+local function getBestButtonsFolder()
+    local owned = getOwnedPlot()
+    local ownedButtons = owned and owned:FindFirstChild("Buttons")
+
+    if ownedButtons then
+        return ownedButtons, "owned plot"
+    end
+
+    local plots = workspace:FindFirstChild("Plots")
+    if not plots then
+        return nil, "no workspace.Plots"
+    end
+
+    local _, _, root = getCharacterPartsV2()
+    local bestButtons
+    local bestDistance = math.huge
+
+    for _, plot in ipairs(plots:GetChildren()) do
+        local buttons = plot:FindFirstChild("Buttons")
+        local pos = buttons and getObjectPosition(plot)
+
+        if buttons and pos then
+            local distance = root and (root.Position - pos).Magnitude or 0
+
+            if distance < bestDistance then
+                bestDistance = distance
+                bestButtons = buttons
             end
         end
     end
 
-    if not called then
-        callRemote("rev_B_Collect")
-        callRemote("rev_B_Collect", 1)
-        callRemote("rev_B_Collect", 2)
+    if bestButtons then
+        return bestButtons, "nearest plot"
     end
+
+    return nil, "buttons not found"
+end
+
+local function getTouchButtonParts(mode)
+    local buttons, reason = getBestButtonsFolder()
+    local parts = {}
+
+    if not buttons then
+        warnOnce("buttons_missing_" .. tostring(mode), "Buttons folder not found: " .. tostring(reason))
+        return parts
+    end
+
+    for _, item in ipairs(buttons:GetDescendants()) do
+        if item:IsA("TouchTransmitter") and item.Parent and item.Parent:IsA("BasePart") then
+            local part = item.Parent
+            local partName = string.lower(part.Name)
+            local fullName = string.lower(part:GetFullName())
+            local include = false
+
+            if mode == "collect" then
+                include = true
+            elseif mode == "upgrade" then
+                include = partName == "l1" or partName == "l2" or string.find(fullName, "upgrade", 1, true) ~= nil
+            else
+                include = true
+            end
+
+            if include then
+                parts[#parts + 1] = part
+            end
+        end
+    end
+
+    return parts
+end
+
+local function touchPart(part)
+    local _, _, root = getCharacterPartsV2()
+
+    if not root or not part then
+        return false
+    end
+
+    if typeof(firetouchinterest) ~= "function" then
+        warnOnce("no_firetouchinterest", "firetouchinterest is unavailable in this executor")
+        return false
+    end
+
+    local touched = false
+
+    pcall(function()
+        firetouchinterest(root, part, 0)
+        task.wait(0.03)
+        firetouchinterest(root, part, 1)
+        touched = true
+    end)
+
+    pcall(function()
+        firetouchinterest(part, root, 0)
+        task.wait(0.03)
+        firetouchinterest(part, root, 1)
+        touched = true
+    end)
+
+    return touched
+end
+
+local function touchButtons(mode, limit)
+    local count = 0
+    local parts = getTouchButtonParts(mode)
+    limit = limit or 60
+
+    for _, part in ipairs(parts) do
+        if count >= limit then
+            break
+        end
+
+        if touchPart(part) then
+            count += 1
+        end
+    end
+
+    return count
+end
+
+local function textOfGuiButton(button)
+    local texts = { button.Name }
+
+    pcall(function()
+        if button.Text and button.Text ~= "" then
+            texts[#texts + 1] = button.Text
+        end
+    end)
+
+    for _, child in ipairs(button:GetDescendants()) do
+        if child:IsA("TextLabel") or child:IsA("TextButton") then
+            pcall(function()
+                if child.Text and child.Text ~= "" then
+                    texts[#texts + 1] = child.Text
+                end
+            end)
+        end
+    end
+
+    return string.lower(table.concat(texts, " "))
+end
+
+local function isOwnGuiObject(object)
+    local ok, result = pcall(function()
+        return object:IsDescendantOf(screenGui)
+    end)
+
+    return ok and result or false
+end
+
+local function findGuiButtonsByWords(words)
+    local found = {}
+    local playerGuiNow = player:FindFirstChild("PlayerGui")
+
+    if not playerGuiNow then
+        return found
+    end
+
+    for _, object in ipairs(playerGuiNow:GetDescendants()) do
+        if object:IsA("GuiButton") and not isOwnGuiObject(object) then
+            local text = textOfGuiButton(object)
+            local matched = true
+
+            for _, word in ipairs(words) do
+                if not string.find(text, string.lower(tostring(word)), 1, true) then
+                    matched = false
+                    break
+                end
+            end
+
+            if matched then
+                found[#found + 1] = object
+            end
+        end
+    end
+
+    return found
+end
+
+local function clickGuiButtonsByWords(words, limit)
+    local clicked = 0
+    local buttons = findGuiButtonsByWords(words)
+    limit = limit or 10
+
+    for _, button in ipairs(buttons) do
+        if clicked >= limit then
+            break
+        end
+
+        if activateButton and activateButton(button) then
+            clicked += 1
+        end
+    end
+
+    return clicked, #buttons
+end
+
+local function equipGuidTools()
+    local character, humanoid = getCharacterPartsV2()
+    local backpack = player:FindFirstChild("Backpack")
+    local equipped = 0
+
+    local function tryEquip(tool)
+        if not tool:IsA("Tool") then
+            return
+        end
+
+        local hasGuid = false
+        pcall(function()
+            hasGuid = tool:GetAttribute("GUID") ~= nil
+        end)
+
+        if humanoid and (hasGuid or string.find(string.lower(tool.Name), "kick", 1, true)) then
+            pcall(function()
+                humanoid:EquipTool(tool)
+            end)
+            equipped += 1
+            task.wait(0.05)
+        end
+    end
+
+    if backpack then
+        for _, tool in ipairs(backpack:GetChildren()) do
+            tryEquip(tool)
+        end
+    end
+
+    if character then
+        for _, tool in ipairs(character:GetChildren()) do
+            tryEquip(tool)
+        end
+    end
+
+    return equipped
+end
+
+local function doCollect()
+    local remoteCalls = 0
+
+    if callLearnedRemote("collect") then
+        remoteCalls += 1
+    end
+
+    if callRemote("rev_B_Collect") then
+        remoteCalls += 1
+    end
+
+    if callRemote("rev_B_Collect", 1) then
+        remoteCalls += 1
+    end
+
+    if callRemote("rev_B_Collect", 2) then
+        remoteCalls += 1
+    end
+
+    local touches = touchButtons("collect", 80)
+
+    if remoteCalls > 0 or touches > 0 then
+        setStatus("Collect: remotes " .. tostring(remoteCalls) .. ", touches " .. tostring(touches), Color3.fromRGB(120, 255, 170))
+        return true
+    end
+
+    setStatus("Collect failed: no remote/touch", Color3.fromRGB(255, 120, 120))
+    return false
 end
 
 local function doUpgrade()
-    local called = false
-    local plot = getOwnedPlot()
-    local buttons = plot and plot:FindFirstChild("Buttons")
+    local remoteCalls = 0
 
-    if buttons then
-        for _, item in ipairs(buttons:GetDescendants()) do
-            if item:IsA("TouchTransmitter") then
-                local parentName = item.Parent and item.Parent.Name
-
-                if parentName == "l1" then
-                    called = callRemote("rev_B_Upgrade", 1) or called
-                    task.wait(0.15)
-                elseif parentName == "l2" then
-                    called = callRemote("rev_B_Upgrade", 2) or called
-                    task.wait(0.15)
-                end
-            end
-        end
+    if callLearnedRemote("upgrade") then
+        remoteCalls += 1
     end
 
-    if not called then
-        callRemote("rev_B_Upgrade", 1)
-        task.wait(0.15)
-        callRemote("rev_B_Upgrade", 2)
+    if callRemote("rev_B_Upgrade", 1) then
+        remoteCalls += 1
     end
+
+    task.wait(0.08)
+
+    if callRemote("rev_B_Upgrade", 2) then
+        remoteCalls += 1
+    end
+
+    local touches = touchButtons("upgrade", 60)
+
+    if remoteCalls > 0 or touches > 0 then
+        setStatus("Upgrade: remotes " .. tostring(remoteCalls) .. ", touches " .. tostring(touches), Color3.fromRGB(120, 255, 170))
+        return true
+    end
+
+    setStatus("Upgrade failed: no remote/touch", Color3.fromRGB(255, 120, 120))
+    return false
 end
 
 local function fireConnection(connection)
@@ -611,7 +1100,7 @@ local function fireConnection(connection)
     return false
 end
 
-local function activateButton(button)
+activateButton = function(button)
     local fired = false
 
     if typeof(getconnections) == "function" then
@@ -635,7 +1124,7 @@ local function activateButton(button)
         end
     end
 
-    if not fired and typeof(firesignal) == "function" then
+    if typeof(firesignal) == "function" then
         pcall(function()
             firesignal(button.Activated)
             fired = true
@@ -647,40 +1136,62 @@ local function activateButton(button)
         end)
     end
 
-    if not fired then
-        pcall(function()
-            button:Activate()
-            fired = true
-        end)
-    end
+    pcall(function()
+        button:Activate()
+        fired = true
+    end)
+
+    pcall(function()
+        local virtualInput = game:GetService("VirtualInputManager")
+        local pos = button.AbsolutePosition + (button.AbsoluteSize / 2)
+        virtualInput:SendMouseButtonEvent(pos.X, pos.Y, 0, true, game, 0)
+        task.wait(0.03)
+        virtualInput:SendMouseButtonEvent(pos.X, pos.Y, 0, false, game, 0)
+        fired = true
+    end)
 
     return fired
 end
 
 local function doBonus()
-    local pg = player:FindFirstChild("PlayerGui")
-    local upgradesGui = pg and pg:FindFirstChild("KickUpgrades", true)
+    local remoteCalls = 0
+    local clicks = 0
+    local found = 0
 
-    if not upgradesGui then
-        warnOnce("bonus_gui_missing", "PlayerGui.KickUpgrades not found")
-        return
+    equipGuidTools()
+
+    if callLearnedRemote("bonus") then
+        remoteCalls += 1
     end
 
-    local fired = false
+    local clicked1, found1 = clickGuiButtonsByWords({ "bonus" }, 20)
+    clicks += clicked1
+    found += found1
 
-    for _, item in ipairs(upgradesGui:GetDescendants()) do
-        if item.Name == "Bonus" and item:IsA("GuiButton") then
-            fired = activateButton(item) or fired
+    local playerGuiNow = player:FindFirstChild("PlayerGui")
+    local upgradesGui = playerGuiNow and playerGuiNow:FindFirstChild("KickUpgrades", true)
+
+    if upgradesGui then
+        for _, item in ipairs(upgradesGui:GetDescendants()) do
+            if item:IsA("GuiButton") and not isOwnGuiObject(item) then
+                local text = textOfGuiButton(item)
+                if string.find(text, "bonus", 1, true) then
+                    found += 1
+                    if activateButton(item) then
+                        clicks += 1
+                    end
+                end
+            end
         end
     end
 
-    if not fired and upgradesGui:IsA("GuiButton") and upgradesGui.Name == "Bonus" then
-        fired = activateButton(upgradesGui) or fired
+    if remoteCalls > 0 or clicks > 0 then
+        setStatus("Bonus: remotes " .. tostring(remoteCalls) .. ", clicked " .. tostring(clicks), Color3.fromRGB(120, 255, 170))
+        return true
     end
 
-    if not fired then
-        warnOnce("bonus_button_missing", "Bonus GuiButton found no fireable signal")
-    end
+    setStatus("Bonus not fired. Found buttons: " .. tostring(found), Color3.fromRGB(255, 120, 120))
+    return false
 end
 
 local function getCharacterParts()
@@ -730,14 +1241,35 @@ local function tryKickTools()
 end
 
 local function doKickAndClaim()
-    local activated = tryKickTools()
+    local remoteCalls = 0
 
-    -- The decoded original has no real kick remote. These collect calls are the only claim remotes present in the file.
+    if callLearnedRemote("kick") then
+        remoteCalls += 1
+    end
+
+    local activated = tryKickTools()
+    local clickedKick, foundKick = clickGuiButtonsByWords({ "kick" }, 8)
+    local clickedClaim, foundClaim = clickGuiButtonsByWords({ "claim" }, 8)
+
+    -- Claim/cash remotes from the decoded file.
     callRemote("rev_B_Collect")
     callRemote("rev_B_Collect", 1)
     callRemote("rev_B_Collect", 2)
 
-    return activated
+    local total = remoteCalls + activated + clickedKick + clickedClaim
+
+    if total > 0 then
+        setStatus(
+            "Kick: learned " .. tostring(remoteCalls)
+                .. ", tools " .. tostring(activated)
+                .. ", gui " .. tostring(clickedKick + clickedClaim),
+            Color3.fromRGB(120, 255, 170)
+        )
+    else
+        setStatus("Kick not found. GUI kick/claim found: " .. tostring(foundKick + foundClaim), Color3.fromRGB(255, 120, 120))
+    end
+
+    return total
 end
 
 local function cleanMutationHighlights()
@@ -973,6 +1505,31 @@ end)
 
 makeButton("Dump Remotes to F9", dumpRemotes)
 makeButton("Dump Plots to F9", dumpPlots)
+
+makeLabel("Remote Spy / Learn")
+
+makeButton("Spy ON / OFF", function()
+    setSpyEnabled(not remoteSpy.enabled)
+end)
+
+makeButton("Spy Clear", clearSpyCalls)
+makeButton("Spy Print Calls to F9", printSpyCalls)
+
+makeButton("Learn Last as Kick", function()
+    learnLastRemote("kick")
+end)
+
+makeButton("Learn Last as Bonus", function()
+    learnLastRemote("bonus")
+end)
+
+makeButton("Learn Last as Collect", function()
+    learnLastRemote("collect")
+end)
+
+makeButton("Learn Last as Upgrade", function()
+    learnLastRemote("upgrade")
+end)
 
 makeLabel("Find Mutation")
 
