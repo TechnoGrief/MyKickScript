@@ -1,6 +1,4 @@
--- Decoded / reconstructed from the pasted obfuscated Lua.
--- Original protection: custom base64 string table + VM/control-flow obfuscation.
--- This is a readable reconstruction of the behavior observed in a sandbox trace.
+
 
 local CoreGui = game:GetService("CoreGui")
 local oldGui = CoreGui:FindFirstChild("ToraScript")
