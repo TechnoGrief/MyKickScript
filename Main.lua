@@ -7,8 +7,10 @@ if oldGui then
 end
 
 local Library = loadstring(game:HttpGet(
-    "https://https://raw.githubusercontent.com/TechnoGrief/MyKickScript/refs/heads/main/Coolscript.lua"
+    "https://raw.githubusercontent.com/TechnoGrief/MyKickScript/main/Coolscript.lua"
+        
 ))()
+
 
 local main = Library:CreateWindow("Kick a Lucky Block")
 
