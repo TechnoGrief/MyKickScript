@@ -1,6 +1,14 @@
-
+-- Decoded + fixed KickaLuckyBlock.lua
+-- VM garbage removed, global-name bug fixed, duplicate toggle flags fixed.
+-- No guessed missing payload added: Perfect Kick and Mutation Finder keep only behavior present in the original file.
 
 local CoreGui = game:GetService("CoreGui")
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+
+local player = Players.LocalPlayer
+
 local oldGui = CoreGui:FindFirstChild("ToraScript")
 if oldGui then
     oldGui:Destroy()
@@ -8,9 +16,7 @@ end
 
 local Library = loadstring(game:HttpGet(
     "https://raw.githubusercontent.com/TechnoGrief/MyKickScript/main/Coolscript.lua"
-        
 ))()
-
 
 local main = Library:CreateWindow("Kick a Lucky Block")
 
@@ -23,199 +29,263 @@ local flags = {
     rebirth = false,
 }
 
-local mutations = {
-    Golden = false,
-    Diamond = false,
-    Plasma = false,
-    Molten = false,
-    Radioactive = false,
-    Shadow = false,
-    Electrified = false,
-    Rainbow = false,
-}
-
 local function network()
-    return game:GetService("ReplicatedStorage").Shared.Packages.Network
+    return ReplicatedStorage.Shared.Packages.Network
 end
 
-local function getCharacter()
-    local player = game:GetService("Players").LocalPlayer
-    local character = player.Character or player.CharacterAdded:Wait()
-    local root = character:WaitForChild("HumanoidRootPart")
-    local humanoid = character:WaitForChild("Humanoid")
-    return character, root, humanoid
+local function getOwnedPlot()
+    local plots = workspace:FindFirstChild("Plots")
+    if not plots then
+        return nil
+    end
+
+    for _, plot in ipairs(plots:GetChildren()) do
+        if plot:GetAttribute("Owner") == player.Name then
+            return plot
+        end
+    end
+
+    return nil
 end
 
-local function perfectKickAndClaim()
-    -- The obfuscated script repeatedly reads the local player's character,
-    -- HumanoidRootPart and Humanoid while the toggle is enabled.
-    -- In the real Roblox environment this routine appears to automate
-    -- aiming/kicking lucky blocks and claiming their results.
+local function safeFireConnection(connection)
+    if typeof(connection) ~= "table" then
+        return
+    end
+
+    if typeof(connection.Fire) == "function" then
+        pcall(function()
+            connection:Fire()
+        end)
+    elseif typeof(connection.Function) == "function" then
+        pcall(connection.Function)
+    end
+end
+
+local function clickActivated(object)
+    if not object then
+        return
+    end
+
+    local signal = object.Activated or object.MouseButton1Click
+    if not signal then
+        return
+    end
+
+    if typeof(getconnections) == "function" then
+        for _, connection in ipairs(getconnections(signal)) do
+            safeFireConnection(connection)
+        end
+    elseif typeof(firesignal) == "function" then
+        pcall(firesignal, signal)
+    end
+end
+
+local function kickLoop()
+    -- Exact decoded behavior: it only waits for the character, HumanoidRootPart and Humanoid.
+    -- No actual kick/claim remote or touch logic exists in the uploaded obfuscated file.
     while flags.kick do
-        getCharacter()
-        task.wait(0.2)
+        task.wait()
+
+        pcall(function()
+            local character = player.Character or player.CharacterAdded:Wait()
+            character:WaitForChild("HumanoidRootPart")
+            character:WaitForChild("Humanoid")
+        end)
     end
 end
 
-local function bonusTrain()
-    -- Repeatedly inspects the player's KickUpgrades GUI while enabled.
-    -- The exact target selection is still buried in VM control flow, but the
-    -- observed behavior is a loop over LocalPlayer.PlayerGui.KickUpgrades.
-    local player = game:GetService("Players").LocalPlayer
+local function bonusLoop()
     while flags.bonus do
-        local gui = player.PlayerGui:FindFirstChild("KickUpgrades")
-        if gui then
-            for _, child in ipairs(gui:GetChildren()) do
-                local button = child:FindFirstChildOfClass("TextButton")
-                if button then
-                    firesignal(button.MouseButton1Click)
+        wait()
+
+        pcall(function()
+            local backpack = player:WaitForChild("Backpack")
+            for _, tool in ipairs(backpack:GetChildren()) do
+                if tool:IsA("Tool") then
+                    tool:GetAttribute("GUID")
                 end
             end
-        end
-        task.wait(0.2)
+
+            local playerGui = player:FindFirstChild("PlayerGui")
+            local upgradesGui = playerGui and playerGui:FindFirstChild("KickUpgrades")
+
+            if upgradesGui then
+                for _, item in ipairs(upgradesGui:GetChildren()) do
+                    if item.Name == "Bonus" then
+                        clickActivated(item)
+                    end
+                end
+            end
+
+            wait(0.2)
+        end)
     end
 end
 
-local function collectCash()
-    -- The startup code enumerates workspace.Plots. This routine is the cash
-    -- collection loop tied to that plot data.
+local function collectCashLoop()
     while flags.cash do
-        for _, plot in ipairs(workspace.Plots:GetChildren()) do
-            for _, descendant in ipairs(plot:GetDescendants()) do
-                if descendant.Name == "Cash" or descendant:GetAttribute("Cash") then
-                    pcall(function()
-                        firetouchinterest(getCharacter(), descendant, 0)
-                        firetouchinterest(getCharacter(), descendant, 1)
-                    end)
+        wait()
+
+        pcall(function()
+            local plot = getOwnedPlot()
+            local buttons = plot and plot:FindFirstChild("Buttons")
+
+            if buttons then
+                for _, item in ipairs(buttons:GetDescendants()) do
+                    if item:IsA("TouchTransmitter") then
+                        local parentName = item.Parent and item.Parent.Name
+
+                        if parentName == "l1" then
+                            network().rev_B_Collect:FireServer(1)
+                        elseif parentName == "l2" then
+                            network().rev_B_Collect:FireServer(2)
+                        else
+                            network().rev_B_Collect:FireServer()
+                        end
+                    end
                 end
             end
-        end
-        task.wait(0.2)
+
+            wait(2)
+        end)
     end
 end
 
-local function upgradeAll()
-    -- The exact remote names for every upgrade are obfuscated, but the intent
-    -- is clear from UI text and trace: repeatedly buy available upgrades.
+local function upgradeLoop()
     while flags.upgrade do
-        for _, upgradeName in ipairs({"Kick", "Bonus", "Cash", "Speed"}) do
-            pcall(function()
-                network().rev_UpgradeRequest:FireServer(upgradeName)
-            end)
-        end
-        task.wait(0.2)
+        wait()
+
+        pcall(function()
+            local plot = getOwnedPlot()
+            local buttons = plot and plot:FindFirstChild("Buttons")
+
+            if buttons then
+                for _, item in ipairs(buttons:GetDescendants()) do
+                    if item:IsA("TouchTransmitter") then
+                        local parentName = item.Parent and item.Parent.Name
+
+                        if parentName == "l1" then
+                            network().rev_B_Upgrade:FireServer(1)
+                            wait(0.2)
+                        elseif parentName == "l2" then
+                            network().rev_B_Upgrade:FireServer(2)
+                            wait(0.2)
+                        end
+                    end
+                end
+            end
+
+            wait(1)
+        end)
     end
 end
 
-local function buySpeed()
+local function speedLoop()
     while flags.speed do
-        network().rev_SPEED_UPGRADE:FireServer(1)
-        task.wait(0.2)
+        wait()
+
+        pcall(function()
+            network().rev_SPEED_UPGRADE:FireServer(1)
+            wait(0.2)
+        end)
     end
 end
 
-local function autoRebirth()
+local function rebirthLoop()
     while flags.rebirth do
-        network().rev_RebirthRequest:FireServer()
-        task.wait(0.2)
+        wait()
+
+        pcall(function()
+            network().rev_RebirthRequest:FireServer()
+            wait(2)
+        end)
+    end
+end
+
+local function runLoop(flagName, enabled, loopFunction)
+    flags[flagName] = enabled
+
+    if enabled then
+        task.spawn(loopFunction)
     end
 end
 
 main:AddToggle({
     text = "Perfect Kick & Claim",
-    flag = "toggle",
+    flag = "kick_toggle",
     state = false,
     callback = function(enabled)
-        flags.kick = enabled
         print("Kick: ", enabled)
-        spawn(perfectKickAndClaim)
+        runLoop("kick", enabled, kickLoop)
     end,
 })
 
 main:AddToggle({
     text = "Bonus Train",
-    flag = "toggle",
+    flag = "bonus_toggle",
     state = false,
     callback = function(enabled)
-        flags.bonus = enabled
         print("Bonus: ", enabled)
-        spawn(bonusTrain)
+        runLoop("bonus", enabled, bonusLoop)
     end,
 })
 
 main:AddToggle({
     text = "Collect Cash",
-    flag = "toggle",
+    flag = "cash_toggle",
     state = false,
     callback = function(enabled)
-        flags.cash = enabled
         print("Cash: ", enabled)
-        spawn(collectCash)
+        runLoop("cash", enabled, collectCashLoop)
     end,
 })
 
 main:AddToggle({
     text = "Upgrade All",
-    flag = "toggle",
+    flag = "upgrade_toggle",
     state = false,
     callback = function(enabled)
-        flags.upgrade = enabled
         print("Upgrade: ", enabled)
-        spawn(upgradeAll)
+        runLoop("upgrade", enabled, upgradeLoop)
     end,
 })
 
 main:AddToggle({
     text = "Buy Speed",
-    flag = "toggle",
+    flag = "speed_toggle",
     state = false,
     callback = function(enabled)
-        flags.speed = enabled
         print("Speed: ", enabled)
-        spawn(buySpeed)
+        runLoop("speed", enabled, speedLoop)
     end,
 })
 
 main:AddToggle({
     text = "Auto Rebirth",
-    flag = "toggle",
+    flag = "rebirth_toggle",
     state = false,
     callback = function(enabled)
-        flags.rebirth = enabled
         print("Rebirth: ", enabled)
-        spawn(autoRebirth)
+        runLoop("rebirth", enabled, rebirthLoop)
     end,
 })
 
 main:AddButton({
     text = "Sell All",
-    flag = "button",
+    flag = "sell_all_button",
     callback = function()
-        network().ref_B_SellAll:InvokeServer()
+        pcall(function()
+            network().ref_B_SellAll:InvokeServer()
+        end)
     end,
 })
 
 main:AddLabel({
-    text = "Mutation finder"
+    text = "YouTube: Tora IsMe",
 })
 
 local mutationWindow = Library:CreateWindow("Find Mutation")
-
-local function setMutationFlag(name, enabled)
-    mutations[name] = enabled
-    if enabled then
-        task.spawn(function()
-            while mutations[name] do
-                for _, object in ipairs(workspace:GetDescendants()) do
-                    if object.Name:find(name) or tostring(object):find(name) then
-                        print("Found mutation:", name, object)
-                    end
-                end
-                task.wait(0.2)
-            end
-        end)
-    end
-end
 
 for _, name in ipairs({
     "Golden",
@@ -231,8 +301,8 @@ for _, name in ipairs({
         text = name,
         flag = name,
         state = false,
-        callback = function(enabled)
-            setMutationFlag(name, enabled)
+        callback = function()
+            -- Empty in the decoded source.
         end,
     })
 end
